@@ -19,9 +19,9 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 import urllib3
 from PIL import Image, ImageTk, ImageDraw, ImageOps
-import pystray # Библиотека для трея
+import pystray # Library for System Tray
 
-# Отключаем SSL ошибки
+# Disable SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- EXE RESOURCE HELPER ---
@@ -35,18 +35,18 @@ def resource_path(relative_path):
 
     return os.path.join(base_path, relative_path)
 
-# --- CONFIGURATION (НАСТРОЙКИ) ---
+# --- CONFIGURATION ---
 class Config:
-    # Определяем путь к папке приложения (для .exe или .py)
+    # Determine application directory (for .exe or .py)
     if getattr(sys, 'frozen', False):
         APP_DIR = os.path.dirname(sys.executable)
     else:
         APP_DIR = os.path.dirname(os.path.abspath(__file__))
         
-    # Файл сохранения настроек теперь всегда рядом с запускаемым файлом
+    # Config file is always located next to the executable
     CONFIG_FILE = os.path.join(APP_DIR, "config.json")
 
-    # === ТАЙМЕРЫ (ЗАПАСНЫЕ) ===
+    # === SPELL TIMERS (FALLBACK) ===
     SPELL_TIMERS = {
         "summonerflash":    300,
         "summonerteleport": 360,
@@ -62,7 +62,7 @@ class Config:
         "summonermana":     240
     }
     
-    # === ВИЗУАЛ ===
+    # === VISUALS ===
     GLOBAL_OPACITY = 0.85   
     ICON_SIZE = 38          
     ROW_PADDING_Y = 6       
@@ -197,7 +197,7 @@ class GameDataManager:
 class AssetManager:
     @staticmethod
     def load_icon(folder: str, name: str, size: Tuple[int, int], is_round: bool = False) -> ImageTk.PhotoImage:
-        # ОБНОВЛЕНО: Используем resource_path для поддержки EXE
+        # UPDATED: Use resource_path for EXE support
         path = resource_path(os.path.join("assets", folder, name + ".png"))
         try:
             img = Image.open(path).convert("RGBA")
@@ -337,16 +337,16 @@ class OverlayApp:
 
         self.root.withdraw()
         
-        # Перехват CTRL+C
+        # Handle CTRL+C
         signal.signal(signal.SIGINT, self._graceful_exit)
         
-        # ОБНОВЛЕНО: Запуск иконки в трее
+        # UPDATED: Start Tray Icon
         self._setup_tray()
         
         self._monitor_game_loop()
 
     def _setup_tray(self):
-        """Запускает иконку в трее в отдельном потоке."""
+        """Starts the tray icon in a separate thread."""
         def quit_app(icon, item):
             print("[Tray] Quitting...")
             self._save_config()
@@ -354,17 +354,17 @@ class OverlayApp:
             self.root.quit()
             sys.exit(0)
 
-        # Берем иконку Флеша как иконку приложения
+        # Use Flash icon as the application icon
         icon_path = resource_path("assets/spells/SummonerFlash.png")
         if os.path.exists(icon_path):
             image = Image.open(icon_path)
         else:
-            image = Image.new('RGB', (64, 64), color=(255, 255, 0)) # Заглушка (желтый квадрат)
+            image = Image.new('RGB', (64, 64), color=(255, 255, 0)) # Placeholder (yellow square)
 
         menu = pystray.Menu(pystray.MenuItem("Quit", quit_app))
         self.tray_icon = pystray.Icon("LoLTracker", image, "LoL Spell Tracker", menu)
         
-        # Запускаем трей в daemon потоке
+        # Run tray in a daemon thread
         threading.Thread(target=self.tray_icon.run, daemon=True).start()
 
     def _load_config(self):
@@ -397,10 +397,10 @@ class OverlayApp:
             print(f"[Config] Save error: {e}")
 
     def _graceful_exit(self, signum, frame):
-        """Вызывается при Ctrl+C"""
+        """Called on Ctrl+C"""
         print("\n[LoL Tracker] Stopping...")
         self._save_config()
-        # Останавливаем иконку трея если есть
+        # Stop tray icon if it exists
         if hasattr(self, 'tray_icon'):
             self.tray_icon.stop()
         self.root.destroy()
