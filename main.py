@@ -1,10 +1,10 @@
 """
-League of Legends Spell Tracker v9.0 (Tray Icon + EXE Ready)
+Spell Timer v0.1
 Features:
-- System Tray Icon (Minimize to tray).
-- Bundled Resource Support (Works as single .exe).
-- Persistence (Config saves next to .exe).
-- Graceful Exit via Tray.
+- System Tray Icon (Uses custom .ico if available).
+- Bundled Resource Support.
+- Persistence.
+- Graceful Exit.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 import urllib3
 from PIL import Image, ImageTk, ImageDraw, ImageOps
-import pystray # Library for System Tray
+import pystray 
 
 # Disable SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -27,26 +27,19 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # --- EXE RESOURCE HELPER ---
 def resource_path(relative_path):
     """Get absolute path to resource, works for dev and for PyInstaller"""
-    try:
-        # PyInstaller creates a temp folder and stores path in _MEIPASS
-        base_path = getattr(sys, '_MEIPASS', os.path.abspath("."))
-    except Exception:
-        base_path = os.path.abspath(".")
-
+    base_path = getattr(sys, '_MEIPASS', os.path.abspath("."))
     return os.path.join(base_path, relative_path)
 
 # --- CONFIGURATION ---
 class Config:
-    # Determine application directory (for .exe or .py)
     if getattr(sys, 'frozen', False):
         APP_DIR = os.path.dirname(sys.executable)
     else:
         APP_DIR = os.path.dirname(os.path.abspath(__file__))
         
-    # Config file is always located next to the executable
     CONFIG_FILE = os.path.join(APP_DIR, "config.json")
 
-    # === SPELL TIMERS (FALLBACK) ===
+    # === SPELL TIMERS ===
     SPELL_TIMERS = {
         "summonerflash":    300,
         "summonerteleport": 360,
@@ -74,8 +67,8 @@ class Config:
     COLOR_TEXT_ACTIVE = "#FFFFFF" 
     COLOR_TEXT_OUTLINE = "#000000"
     
-    COLOR_PINNED = "#8B0000"    # Dark Red
-    COLOR_HANDLE = "#666666"    # Grey
+    COLOR_PINNED = "#8B0000"    
+    COLOR_HANDLE = "#666666"    
     
     FONT_FAMILY = "Arial"     
     BASE_FONT_SIZE = 12         
@@ -87,7 +80,7 @@ class Config:
     
     CHECK_INTERVAL = 3000
 
-# --- WIN32 API (FOCUS FIX) ---
+# --- WIN32 API ---
 class Win32Utils:
     GWL_EXSTYLE = -20
     WS_EX_NOACTIVATE = 0x08000000
@@ -105,7 +98,7 @@ class Win32Utils:
         except Exception:
             pass
 
-# --- DDRAGON MANAGER (AUTO UPDATE) ---
+# --- DDRAGON MANAGER ---
 class DDragonManager:
     @staticmethod
     def update_timers():
@@ -120,14 +113,11 @@ class DDragonManager:
             if d_resp.status_code != 200: return
             
             data = d_resp.json().get("data", {})
-            count = 0
             for spell_id, info in data.items():
                 cooldowns = info.get("cooldown", [300])
                 cd = int(cooldowns[0])
                 key = spell_id.lower()
                 Config.SPELL_TIMERS[key] = cd
-                count += 1
-            print(f"[DDragon] Updated {count} timers. (Patch {version})")
         except Exception as e:
             print(f"[DDragon] Update failed: {e}")
 
@@ -169,7 +159,6 @@ class GameDataManager:
     def _clean_spell_name(raw: Optional[str]) -> str:
         if not raw: return "Unknown"
         raw_lower = raw.lower()
-        
         if "teleport" in raw_lower: return "SummonerTeleport"
         if "smite" in raw_lower: return "SummonerSmite"
         if "flash" in raw_lower: return "SummonerFlash"
@@ -179,11 +168,9 @@ class GameDataManager:
         if "exhaust" in raw_lower: return "SummonerExhaust"
         if "cleanse" in raw_lower or "boost" in raw_lower: return "SummonerBoost"
         if "ghost" in raw_lower or "haste" in raw_lower: return "SummonerHaste"
-
         parts = raw.split("_")
         for p in reversed(parts):
             if p.startswith("Summoner") and p != "SummonerSpell": return p
-            
         return "Unknown"
 
     @staticmethod
@@ -197,7 +184,6 @@ class GameDataManager:
 class AssetManager:
     @staticmethod
     def load_icon(folder: str, name: str, size: Tuple[int, int], is_round: bool = False) -> ImageTk.PhotoImage:
-        # UPDATED: Use resource_path for EXE support
         path = resource_path(os.path.join("assets", folder, name + ".png"))
         try:
             img = Image.open(path).convert("RGBA")
@@ -236,7 +222,6 @@ class SpellTimerWidget(tk.Canvas):
         
         self.dim_img = AssetManager.create_dim_layer((Config.ICON_SIZE, Config.ICON_SIZE))
         self.dim_id = self.create_image(0, 0, image=self.dim_img, anchor="nw", state="hidden")
-        
         self.text_id = self.create_text(Config.ICON_SIZE//2, Config.ICON_SIZE//2, text="", state="hidden")
 
         self.bind("<Button-1>", self._on_left_click)  
@@ -270,7 +255,6 @@ class SpellTimerWidget(tk.Canvas):
         self.delete("timer_text")
         cx, cy = Config.ICON_SIZE // 2, Config.ICON_SIZE // 2
         font_spec = self._get_adaptive_font(text)
-        
         offsets = [(-1, -1), (0, -1), (1, -1), (-1,  0), (1,  0), (-1,  1), (0,  1), (1,  1)]
         for ox, oy in offsets:
             self.create_text(cx + ox, cy + oy, text=text, font=font_spec, fill=Config.COLOR_TEXT_OUTLINE, tags="timer_text", anchor="center")
@@ -280,14 +264,8 @@ class SpellTimerWidget(tk.Canvas):
         if remaining <= 0:
             self._reset()
             return
-        
-        if remaining >= 60:
-            m = remaining // 60
-            s = remaining % 60
-            text = f"{m}:{s:02}"
-        else:
-            text = str(remaining)
-
+        m, s = divmod(remaining, 60)
+        text = f"{m}:{s:02}" if remaining >= 60 else str(remaining)
         self._draw_outlined_text(text)
         self.timer_job = self.after(1000, lambda: self._tick(remaining - 1))
 
@@ -301,7 +279,8 @@ class SpellTimerWidget(tk.Canvas):
 class OverlayApp:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("LoL Tracker")
+        # TITLE UPDATED
+        self.root.title("Spell Timer") 
         self.root.configure(bg=Config.COLOR_BG)
         self.root.overrideredirect(True)
         self.root.wm_attributes("-topmost", True)
@@ -337,11 +316,11 @@ class OverlayApp:
 
         self.root.withdraw()
         
+        # Start Tray
+        self._setup_tray()
+        
         # Handle CTRL+C
         signal.signal(signal.SIGINT, self._graceful_exit)
-        
-        # UPDATED: Start Tray Icon
-        self._setup_tray()
         
         self._monitor_game_loop()
 
@@ -354,17 +333,27 @@ class OverlayApp:
             self.root.quit()
             sys.exit(0)
 
-        # Use Flash icon as the application icon
-        icon_path = resource_path("assets/spells/SummonerFlash.png")
-        if os.path.exists(icon_path):
-            image = Image.open(icon_path)
-        else:
-            image = Image.new('RGB', (64, 64), color=(255, 255, 0)) # Placeholder (yellow square)
+        # 1. Try to load custom icon.ico
+        custom_icon = resource_path("ico/icon.ico")
+        # 2. Fallback to Flash icon
+        flash_icon = resource_path("assets/spells/SummonerFlash.png")
+        
+        image = None
+        if os.path.exists(custom_icon):
+            try:
+                image = Image.open(custom_icon)
+            except: pass
+            
+        if image is None and os.path.exists(flash_icon):
+            image = Image.open(flash_icon)
+            
+        if image is None:
+            image = Image.new('RGB', (64, 64), color=(255, 255, 0))
 
         menu = pystray.Menu(pystray.MenuItem("Quit", quit_app))
-        self.tray_icon = pystray.Icon("LoLTracker", image, "LoL Spell Tracker", menu)
+        # NAME UPDATED
+        self.tray_icon = pystray.Icon("SpellTimer", image, "Spell Timer", menu)
         
-        # Run tray in a daemon thread
         threading.Thread(target=self.tray_icon.run, daemon=True).start()
 
     def _load_config(self):
@@ -397,10 +386,8 @@ class OverlayApp:
             print(f"[Config] Save error: {e}")
 
     def _graceful_exit(self, signum, frame):
-        """Called on Ctrl+C"""
-        print("\n[LoL Tracker] Stopping...")
+        print("\n[Spell Timer] Stopping...")
         self._save_config()
-        # Stop tray icon if it exists
         if hasattr(self, 'tray_icon'):
             self.tray_icon.stop()
         self.root.destroy()
@@ -421,7 +408,7 @@ class OverlayApp:
         data = GameDataManager.fetch_data()
         if data:
             if not self.game_active:
-                print("[LoL Tracker] Match found!")
+                print("[Spell Timer] Match found!")
                 self._build_enemy_rows(data)
                 self.root.deiconify()
                 
@@ -431,7 +418,7 @@ class OverlayApp:
                 self.game_active = True
         else:
             if self.game_active:
-                print("[LoL Tracker] Match ended.")
+                print("[Spell Timer] Match ended.")
                 self.root.withdraw()
                 self._save_config()
                 self.game_active = False
