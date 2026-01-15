@@ -1,14 +1,17 @@
 """
-League of Legends Spell Tracker v7.1 (Right-Click Reset)
+League of Legends Spell Tracker v8.0 (Persistence & Graceful Exit)
 Features:
-- LEFT CLICK on spell: Start Timer.
-- RIGHT CLICK on spell: RESET Timer (cancel accidental click).
-- RIGHT CLICK on header (::::): Lock/Unlock window.
-- Auto-Update & Smart Detect included.
+- SAVES window position and PIN status to 'config.json'.
+- RESTORES state on restart.
+- Handles CTRL+C gracefully (saves before exit).
+- Right-Click Reset, Auto-Update, Smart Detect.
 """
 
 from __future__ import annotations
 import os
+import sys
+import json
+import signal
 import ctypes
 import tkinter as tk
 from typing import Any, Dict, List, Optional, Tuple
@@ -21,6 +24,9 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- CONFIGURATION (НАСТРОЙКИ) ---
 class Config:
+    # Файл сохранения настроек
+    CONFIG_FILE = "config.json"
+
     # === ТАЙМЕРЫ (ЗАПАСНЫЕ) ===
     SPELL_TIMERS = {
         "summonerflash":    300,
@@ -49,7 +55,6 @@ class Config:
     COLOR_TEXT_ACTIVE = "#FFFFFF" 
     COLOR_TEXT_OUTLINE = "#000000"
     
-    # Цвет заголовка при блокировке
     COLOR_PINNED = "#8B0000"    # Dark Red
     COLOR_HANDLE = "#666666"    # Grey
     
@@ -214,21 +219,17 @@ class SpellTimerWidget(tk.Canvas):
         
         self.text_id = self.create_text(Config.ICON_SIZE//2, Config.ICON_SIZE//2, text="", state="hidden")
 
-        # Бинды мыши
-        self.bind("<Button-1>", self._on_left_click)  # ЛКМ - Старт
-        self.bind("<Button-3>", self._on_right_click) # ПКМ - Сброс
+        self.bind("<Button-1>", self._on_left_click)  
+        self.bind("<Button-3>", self._on_right_click) 
 
     def _on_left_click(self, event):
         if self.is_active: return
-        
         key = self.spell_name.lower()
         cd = Config.SPELL_TIMERS.get(key, 300)
         self._start_timer(cd)
 
     def _on_right_click(self, event):
-        """Сброс таймера при нажатии правой кнопкой."""
-        if self.is_active:
-            self._reset()
+        if self.is_active: self._reset()
 
     def _start_timer(self, duration):
         self.is_active = True
@@ -287,10 +288,17 @@ class OverlayApp:
         self.root.wm_attributes("-alpha", Config.GLOBAL_OPACITY)
 
         self.game_active = False
-        self.is_pinned = False
         self._img_refs = []
+        
+        # Загрузка настроек (координаты, пин)
+        self.saved_x = 0
+        self.saved_y = 0
+        self.is_pinned = False
+        self._load_config()
+
         self._drag_data = {"x": 0, "y": 0}
 
+        # UI Setup
         self.container = tk.Frame(self.root, bg=Config.COLOR_BORDER, padx=1, pady=1)
         self.container.pack()
         self.inner = tk.Frame(self.container, bg=Config.COLOR_BG, padx=4, pady=4)
@@ -302,15 +310,67 @@ class OverlayApp:
         self.handle.bind("<ButtonPress-1>", self._start_drag)
         self.handle.bind("<B1-Motion>", self._do_drag)
         self.handle.bind("<Button-3>", self._toggle_pin)
+        
+        # Обновляем вид пина при старте
+        self._update_pin_visual()
 
         self.enemies_frame = tk.Frame(self.inner, bg=Config.COLOR_BG)
         self.enemies_frame.pack()
 
         self.root.withdraw()
+        
+        # Перехват CTRL+C
+        signal.signal(signal.SIGINT, self._graceful_exit)
+        
         self._monitor_game_loop()
+
+    def _load_config(self):
+        """Загружает позицию и статус пина из JSON."""
+        if os.path.exists(Config.CONFIG_FILE):
+            try:
+                with open(Config.CONFIG_FILE, 'r') as f:
+                    data = json.load(f)
+                    self.saved_x = data.get('x', 0)
+                    self.saved_y = data.get('y', 0)
+                    self.is_pinned = data.get('pinned', False)
+                    print(f"[Config] Loaded: Pos({self.saved_x},{self.saved_y}), Pinned({self.is_pinned})")
+            except Exception as e:
+                print(f"[Config] Load error: {e}")
+        else:
+            # Дефолтные координаты (справа)
+            sw = self.root.winfo_screenwidth()
+            self.saved_x = sw - 250
+            self.saved_y = 100
+
+    def _save_config(self):
+        """Сохраняет текущую позицию и статус пина."""
+        # Если окно скрыто, winfo_x может вернуть мусор. 
+        # Используем saved_x, который обновляется при перетаскивании.
+        data = {
+            'x': self.saved_x,
+            'y': self.saved_y,
+            'pinned': self.is_pinned
+        }
+        try:
+            with open(Config.CONFIG_FILE, 'w') as f:
+                json.dump(data, f)
+            print("[Config] Saved settings.")
+        except Exception as e:
+            print(f"[Config] Save error: {e}")
+
+    def _graceful_exit(self, signum, frame):
+        """Вызывается при Ctrl+C"""
+        print("\n[LoL Tracker] Stopping...")
+        self._save_config()
+        self.root.destroy()
+        sys.exit(0)
 
     def _toggle_pin(self, event):
         self.is_pinned = not self.is_pinned
+        self._update_pin_visual()
+        self._save_config() # Сохраняем сразу при изменении пина
+
+    def _update_pin_visual(self):
         if self.is_pinned:
             self.handle.config(text="🔒 PINNED", fg=Config.COLOR_PINNED, cursor="arrow")
         else:
@@ -323,12 +383,17 @@ class OverlayApp:
                 print("[LoL Tracker] Match found!")
                 self._build_enemy_rows(data)
                 self.root.deiconify()
+                
+                # Восстанавливаем позицию
+                self.root.geometry(f"+{self.saved_x}+{self.saved_y}")
+                
                 self.root.after(100, self._apply_native_styles)
                 self.game_active = True
         else:
             if self.game_active:
                 print("[LoL Tracker] Match ended.")
                 self.root.withdraw()
+                self._save_config() # Сохраняем позицию при конце игры
                 self.game_active = False
         self.root.after(Config.CHECK_INTERVAL, self._monitor_game_loop)
 
@@ -374,7 +439,12 @@ class OverlayApp:
         dy = event.y - self._drag_data["y"]
         x = self.root.winfo_x() + dx
         y = self.root.winfo_y() + dy
+        
         self.root.geometry(f"+{x}+{y}")
+        
+        # Обновляем сохраненные координаты в памяти
+        self.saved_x = x
+        self.saved_y = y
 
     def run(self):
         self.root.mainloop()

@@ -32,6 +32,7 @@ htmlcov/
 .env
 *.env
 api_wiki.txt
+config.json
 
 # OS files
 .DS_Store
