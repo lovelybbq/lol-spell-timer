@@ -3,13 +3,13 @@ echo ==========================================
 echo      Spell Timer Build System
 echo ==========================================
 
-:: 0. RUN SETUP
+:: 0. RUN SETUP (AUTOMATED)
 echo.
 echo [Step 0] Running Setup to verify dependencies...
-:: Run setup.bat to create venv and install libraries if missing
-call setup.bat
+:: We pass "--nopause" so setup.bat doesn't wait for user input
+call setup.bat --nopause
 
-:: If setup.bat failed (or was closed) - stop the build
+:: If setup.bat failed - stop the build
 if %errorlevel% neq 0 (
     echo [ERROR] Setup failed! Aborting build.
     pause
@@ -17,7 +17,6 @@ if %errorlevel% neq 0 (
 )
 
 :: 1. ACTIVATE VENV
-:: Activate the environment to ensure we use the installed libraries
 if exist "venv\Scripts\activate.bat" (
     call venv\Scripts\activate
 )
@@ -47,11 +46,6 @@ echo.
 echo [3/3] Building EXE with PyInstaller...
 echo Using Icon: ico\icon.ico
 echo Name: Spell Timer
-
-:: --noconsole: No black window
-:: --onefile: Single .exe file
-:: --add-data: Include assets and ico folders inside exe
-:: --hidden-import: Ensure libraries are included
 
 pyinstaller --noconsole --onefile --name "Spell Timer" ^
  --icon "ico\icon.ico" ^

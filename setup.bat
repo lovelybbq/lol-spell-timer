@@ -48,12 +48,20 @@ if %errorlevel% equ 0 (
     echo ==========================================
     echo [SUCCESS] Setup complete!
     echo ==========================================
-    echo Now you can run:
-    echo  - download_assets.py
-    echo  - build_exe.bat
 ) else (
     echo.
     echo [ERROR] Failed to install dependencies.
+    pause
+    exit /b
 )
 
+:: CHECK FOR NOPAUSE ARGUMENT
+:: If we passed "--nopause", skip the final pause
+if "%1"=="--nopause" goto end
+
+echo Now you can run:
+echo  - download_assets.py
+echo  - build_exe.bat
 pause
+
+:end
