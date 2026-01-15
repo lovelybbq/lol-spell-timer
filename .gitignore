@@ -33,6 +33,7 @@ htmlcov/
 *.env
 api_wiki.txt
 config.json
+LoLTracker.spec
 
 # OS files
 .DS_Store

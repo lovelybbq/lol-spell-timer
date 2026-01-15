@@ -1,10 +1,10 @@
 """
-League of Legends Spell Tracker v8.0 (Persistence & Graceful Exit)
+League of Legends Spell Tracker v9.0 (Tray Icon + EXE Ready)
 Features:
-- SAVES window position and PIN status to 'config.json'.
-- RESTORES state on restart.
-- Handles CTRL+C gracefully (saves before exit).
-- Right-Click Reset, Auto-Update, Smart Detect.
+- System Tray Icon (Minimize to tray).
+- Bundled Resource Support (Works as single .exe).
+- Persistence (Config saves next to .exe).
+- Graceful Exit via Tray.
 """
 
 from __future__ import annotations
@@ -13,19 +13,38 @@ import sys
 import json
 import signal
 import ctypes
+import threading
 import tkinter as tk
 from typing import Any, Dict, List, Optional, Tuple
 import requests
 import urllib3
 from PIL import Image, ImageTk, ImageDraw, ImageOps
+import pystray # Библиотека для трея
 
 # Отключаем SSL ошибки
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+# --- EXE RESOURCE HELPER ---
+def resource_path(relative_path):
+    """Get absolute path to resource, works for dev and for PyInstaller"""
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = getattr(sys, '_MEIPASS', os.path.abspath("."))
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
+
 # --- CONFIGURATION (НАСТРОЙКИ) ---
 class Config:
-    # Файл сохранения настроек
-    CONFIG_FILE = "config.json"
+    # Определяем путь к папке приложения (для .exe или .py)
+    if getattr(sys, 'frozen', False):
+        APP_DIR = os.path.dirname(sys.executable)
+    else:
+        APP_DIR = os.path.dirname(os.path.abspath(__file__))
+        
+    # Файл сохранения настроек теперь всегда рядом с запускаемым файлом
+    CONFIG_FILE = os.path.join(APP_DIR, "config.json")
 
     # === ТАЙМЕРЫ (ЗАПАСНЫЕ) ===
     SPELL_TIMERS = {
@@ -178,7 +197,8 @@ class GameDataManager:
 class AssetManager:
     @staticmethod
     def load_icon(folder: str, name: str, size: Tuple[int, int], is_round: bool = False) -> ImageTk.PhotoImage:
-        path = os.path.join("assets", folder, name + ".png")
+        # ОБНОВЛЕНО: Используем resource_path для поддержки EXE
+        path = resource_path(os.path.join("assets", folder, name + ".png"))
         try:
             img = Image.open(path).convert("RGBA")
         except FileNotFoundError:
@@ -290,7 +310,6 @@ class OverlayApp:
         self.game_active = False
         self._img_refs = []
         
-        # Загрузка настроек (координаты, пин)
         self.saved_x = 0
         self.saved_y = 0
         self.is_pinned = False
@@ -311,7 +330,6 @@ class OverlayApp:
         self.handle.bind("<B1-Motion>", self._do_drag)
         self.handle.bind("<Button-3>", self._toggle_pin)
         
-        # Обновляем вид пина при старте
         self._update_pin_visual()
 
         self.enemies_frame = tk.Frame(self.inner, bg=Config.COLOR_BG)
@@ -322,10 +340,34 @@ class OverlayApp:
         # Перехват CTRL+C
         signal.signal(signal.SIGINT, self._graceful_exit)
         
+        # ОБНОВЛЕНО: Запуск иконки в трее
+        self._setup_tray()
+        
         self._monitor_game_loop()
 
+    def _setup_tray(self):
+        """Запускает иконку в трее в отдельном потоке."""
+        def quit_app(icon, item):
+            print("[Tray] Quitting...")
+            self._save_config()
+            icon.stop()
+            self.root.quit()
+            sys.exit(0)
+
+        # Берем иконку Флеша как иконку приложения
+        icon_path = resource_path("assets/spells/SummonerFlash.png")
+        if os.path.exists(icon_path):
+            image = Image.open(icon_path)
+        else:
+            image = Image.new('RGB', (64, 64), color=(255, 255, 0)) # Заглушка (желтый квадрат)
+
+        menu = pystray.Menu(pystray.MenuItem("Quit", quit_app))
+        self.tray_icon = pystray.Icon("LoLTracker", image, "LoL Spell Tracker", menu)
+        
+        # Запускаем трей в daemon потоке
+        threading.Thread(target=self.tray_icon.run, daemon=True).start()
+
     def _load_config(self):
-        """Загружает позицию и статус пина из JSON."""
         if os.path.exists(Config.CONFIG_FILE):
             try:
                 with open(Config.CONFIG_FILE, 'r') as f:
@@ -337,15 +379,11 @@ class OverlayApp:
             except Exception as e:
                 print(f"[Config] Load error: {e}")
         else:
-            # Дефолтные координаты (справа)
             sw = self.root.winfo_screenwidth()
             self.saved_x = sw - 250
             self.saved_y = 100
 
     def _save_config(self):
-        """Сохраняет текущую позицию и статус пина."""
-        # Если окно скрыто, winfo_x может вернуть мусор. 
-        # Используем saved_x, который обновляется при перетаскивании.
         data = {
             'x': self.saved_x,
             'y': self.saved_y,
@@ -362,13 +400,16 @@ class OverlayApp:
         """Вызывается при Ctrl+C"""
         print("\n[LoL Tracker] Stopping...")
         self._save_config()
+        # Останавливаем иконку трея если есть
+        if hasattr(self, 'tray_icon'):
+            self.tray_icon.stop()
         self.root.destroy()
         sys.exit(0)
 
     def _toggle_pin(self, event):
         self.is_pinned = not self.is_pinned
         self._update_pin_visual()
-        self._save_config() # Сохраняем сразу при изменении пина
+        self._save_config()
 
     def _update_pin_visual(self):
         if self.is_pinned:
@@ -384,7 +425,6 @@ class OverlayApp:
                 self._build_enemy_rows(data)
                 self.root.deiconify()
                 
-                # Восстанавливаем позицию
                 self.root.geometry(f"+{self.saved_x}+{self.saved_y}")
                 
                 self.root.after(100, self._apply_native_styles)
@@ -393,7 +433,7 @@ class OverlayApp:
             if self.game_active:
                 print("[LoL Tracker] Match ended.")
                 self.root.withdraw()
-                self._save_config() # Сохраняем позицию при конце игры
+                self._save_config()
                 self.game_active = False
         self.root.after(Config.CHECK_INTERVAL, self._monitor_game_loop)
 
@@ -441,8 +481,6 @@ class OverlayApp:
         y = self.root.winfo_y() + dy
         
         self.root.geometry(f"+{x}+{y}")
-        
-        # Обновляем сохраненные координаты в памяти
         self.saved_x = x
         self.saved_y = y
 
