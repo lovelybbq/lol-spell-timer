@@ -1,12 +1,3 @@
-"""
-Spell Timer v0.1
-Features:
-- System Tray Icon (Uses custom .ico if available).
-- Bundled Resource Support.
-- Persistence.
-- Graceful Exit.
-"""
-
 from __future__ import annotations
 import os
 import sys
@@ -24,10 +15,29 @@ import pystray
 # Disable SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# --- EXE RESOURCE HELPER ---
+# --- SINGLE INSTANCE CHECKER (MUTEX) ---
+class SingleInstanceChecker:
+    """Prevents multiple instances of the application."""
+    def __init__(self, app_name="Global\\LoLSpellTimer_v9_5"):
+        self.mutex_name = app_name
+        self.mutex = None
+
+    def is_already_running(self):
+        kernel32 = ctypes.windll.kernel32
+        self.mutex = kernel32.CreateMutexW(None, False, self.mutex_name)
+        last_error = kernel32.GetLastError()
+        # ERROR_ALREADY_EXISTS = 183
+        if last_error == 183:
+            return True
+        return False
+
+# --- RESOURCE HELPER ---
 def resource_path(relative_path):
-    """Get absolute path to resource, works for dev and for PyInstaller"""
-    base_path = getattr(sys, '_MEIPASS', os.path.abspath("."))
+    """Get absolute path to resource, works for dev and for PyInstaller."""
+    try:
+        base_path = getattr(sys, '_MEIPASS', os.path.abspath("."))
+    except Exception:
+        base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
 
 # --- CONFIGURATION ---
@@ -36,10 +46,17 @@ class Config:
         APP_DIR = os.path.dirname(sys.executable)
     else:
         APP_DIR = os.path.dirname(os.path.abspath(__file__))
-        
     CONFIG_FILE = os.path.join(APP_DIR, "config.json")
 
-    # === SPELL TIMERS ===
+    # === ITEM DATABASE (SUMMONER SPELL HASTE) ===
+    # Item ID -> Haste Value
+    ITEM_HASTE_MAP = {
+        3158: 10,    # Ionian Boots of Lucidity (SR/ARAM) -> 10 Haste
+        3171: 20,    # Crimson Lucidity (Ornn Upgrade) -> 20 Haste
+        223158: 10,  # Ionian Boots (Arena) -> 10 Haste
+    }
+
+    # === BASE SPELL TIMERS (Seconds) ===
     SPELL_TIMERS = {
         "summonerflash":    300,
         "summonerteleport": 360,
@@ -67,8 +84,8 @@ class Config:
     COLOR_TEXT_ACTIVE = "#FFFFFF" 
     COLOR_TEXT_OUTLINE = "#000000"
     
-    COLOR_PINNED = "#8B0000"    
-    COLOR_HANDLE = "#666666"    
+    COLOR_PINNED = "#8B0000"    # Dark Red
+    COLOR_HANDLE = "#666666"    # Grey
     
     FONT_FAMILY = "Arial"     
     BASE_FONT_SIZE = 12         
@@ -78,7 +95,7 @@ class Config:
     DDRAGON_VER_URL = "https://ddragon.leagueoflegends.com/api/versions.json"
     DDRAGON_DATA_URL = "https://ddragon.leagueoflegends.com/cdn/{}/data/en_US/summoner.json"
     
-    CHECK_INTERVAL = 3000
+    CHECK_INTERVAL = 2000 # Check every 2 seconds
 
 # --- WIN32 API ---
 class Win32Utils:
@@ -148,10 +165,21 @@ class GameDataManager:
             champ_name = raw_name.split("_")[-1] if "_" in raw_name else raw_name
             spells = p.get("summonerSpells", {})
             
+            # --- CALCULATE HASTE (ITEMS ONLY) ---
+            items = p.get("items", [])
+            current_haste = 0
+            
+            for item in items:
+                i_id = item.get("itemID", 0)
+                # Add haste if item is in our database
+                val = Config.ITEM_HASTE_MAP.get(i_id, 0)
+                current_haste += val
+            
             enemies.append({
                 "champ": champ_name,
                 "spell1": GameDataManager._clean_spell_name(spells.get("summonerSpellOne", {}).get("rawDisplayName")),
                 "spell2": GameDataManager._clean_spell_name(spells.get("summonerSpellTwo", {}).get("rawDisplayName")),
+                "haste": current_haste 
             })
         return enemies
 
@@ -176,8 +204,8 @@ class GameDataManager:
     @staticmethod
     def _get_dummy_data():
         return [
-            {"champ": "Darius", "spell1": "SummonerFlash", "spell2": "SummonerTeleport"},
-            {"champ": "LeeSin", "spell1": "SummonerFlash", "spell2": "SummonerSmite"},
+            {"champ": "Darius", "spell1": "SummonerFlash", "spell2": "SummonerTeleport", "haste": 0},
+            {"champ": "Ornn", "spell1": "SummonerFlash", "spell2": "SummonerTeleport", "haste": 20},
         ]
 
 # --- ASSET MANAGER ---
@@ -208,12 +236,14 @@ class AssetManager:
         img = Image.new("RGBA", size, (0, 0, 0, 180)) 
         return ImageTk.PhotoImage(img)
 
-# --- UI WIDGET ---
+# --- SPELL TIMER WIDGET ---
 class SpellTimerWidget(tk.Canvas):
-    def __init__(self, parent, spell_name: str):
+    def __init__(self, parent, champ_name: str, spell_name: str, app_ref):
         super().__init__(parent, width=Config.ICON_SIZE, height=Config.ICON_SIZE, 
                          bg=Config.COLOR_BG, highlightthickness=0)
+        self.champ_name = champ_name
         self.spell_name = spell_name
+        self.app_ref = app_ref # Reference to main app to access cache
         self.is_active = False
         self.timer_job = None
 
@@ -230,8 +260,21 @@ class SpellTimerWidget(tk.Canvas):
     def _on_left_click(self, event):
         if self.is_active: return
         key = self.spell_name.lower()
-        cd = Config.SPELL_TIMERS.get(key, 300)
-        self._start_timer(cd)
+        base_cd = Config.SPELL_TIMERS.get(key, 300)
+        
+        # --- CALCULATE COOLDOWN WITH HASTE ---
+        # Get current haste from app cache (updated in background)
+        current_haste = self.app_ref.get_haste(self.champ_name)
+        
+        # Formula: ReducedCooldown = Base * (100 / (100 + Haste))
+        if current_haste > 0:
+            final_cd = base_cd * (100 / (100 + current_haste))
+            final_cd = int(final_cd)
+            print(f"[Timer] {self.champ_name} ({self.spell_name}): Base {base_cd}s -> Haste {current_haste} -> {final_cd}s")
+        else:
+            final_cd = base_cd
+
+        self._start_timer(final_cd)
 
     def _on_right_click(self, event):
         if self.is_active: self._reset()
@@ -275,11 +318,10 @@ class SpellTimerWidget(tk.Canvas):
         self.delete("timer_text")
         self.itemconfig(self.dim_id, state="hidden")
 
-# --- APP ---
+# --- MAIN APP ---
 class OverlayApp:
     def __init__(self):
         self.root = tk.Tk()
-        # TITLE UPDATED
         self.root.title("Spell Timer") 
         self.root.configure(bg=Config.COLOR_BG)
         self.root.overrideredirect(True)
@@ -287,6 +329,7 @@ class OverlayApp:
         self.root.wm_attributes("-alpha", Config.GLOBAL_OPACITY)
 
         self.game_active = False
+        self.enemy_data_cache = {} # Cache to store fresh enemy data
         self._img_refs = []
         
         self.saved_x = 0
@@ -316,16 +359,18 @@ class OverlayApp:
 
         self.root.withdraw()
         
-        # Start Tray
         self._setup_tray()
         
-        # Handle CTRL+C
         signal.signal(signal.SIGINT, self._graceful_exit)
         
         self._monitor_game_loop()
 
+    def get_haste(self, champ_name: str) -> int:
+        """Returns the current haste for a specific champion from cache."""
+        data = self.enemy_data_cache.get(champ_name, {})
+        return data.get('haste', 0)
+
     def _setup_tray(self):
-        """Starts the tray icon in a separate thread."""
         def quit_app(icon, item):
             print("[Tray] Quitting...")
             self._save_config()
@@ -333,9 +378,7 @@ class OverlayApp:
             self.root.quit()
             sys.exit(0)
 
-        # 1. Try to load custom icon.ico
         custom_icon = resource_path("ico/icon.ico")
-        # 2. Fallback to Flash icon
         flash_icon = resource_path("assets/spells/SummonerFlash.png")
         
         image = None
@@ -351,7 +394,6 @@ class OverlayApp:
             image = Image.new('RGB', (64, 64), color=(255, 255, 0))
 
         menu = pystray.Menu(pystray.MenuItem("Quit", quit_app))
-        # NAME UPDATED
         self.tray_icon = pystray.Icon("SpellTimer", image, "Spell Timer", menu)
         
         threading.Thread(target=self.tray_icon.run, daemon=True).start()
@@ -381,7 +423,7 @@ class OverlayApp:
         try:
             with open(Config.CONFIG_FILE, 'w') as f:
                 json.dump(data, f)
-            print("[Config] Saved settings.")
+            print("[Config] Settings saved.")
         except Exception as e:
             print(f"[Config] Save error: {e}")
 
@@ -407,28 +449,38 @@ class OverlayApp:
     def _monitor_game_loop(self):
         data = GameDataManager.fetch_data()
         if data:
+            # 1. Parse enemies and update cache with fresh data (items/haste)
+            enemies = GameDataManager.parse_enemies(data)
+            for enemy in enemies:
+                self.enemy_data_cache[enemy['champ']] = enemy
+            
+            # 2. Build UI only if game just started
             if not self.game_active:
                 print("[Spell Timer] Match found!")
-                self._build_enemy_rows(data)
+                self._build_enemy_rows(enemies)
                 self.root.deiconify()
-                
                 self.root.geometry(f"+{self.saved_x}+{self.saved_y}")
-                
                 self.root.after(100, self._apply_native_styles)
                 self.game_active = True
+            
+            # NOTE: We do NOT rebuild UI in loop to preserve running timers.
+            # Haste data is fetched from cache dynamically on click.
+            
         else:
             if self.game_active:
                 print("[Spell Timer] Match ended.")
                 self.root.withdraw()
                 self._save_config()
                 self.game_active = False
+                self.enemy_data_cache.clear()
+                
         self.root.after(Config.CHECK_INTERVAL, self._monitor_game_loop)
 
-    def _build_enemy_rows(self, data):
+    def _build_enemy_rows(self, enemies: List[Dict]):
+        # Full rebuild (only on game start)
         for widget in self.enemies_frame.winfo_children(): widget.destroy()
         self._img_refs.clear()
 
-        enemies = GameDataManager.parse_enemies(data)
         if not enemies: return
 
         for i, enemy in enumerate(enemies):
@@ -445,7 +497,8 @@ class OverlayApp:
             lbl.pack(side="left", padx=(0, 8))
 
             for s_name in [enemy['spell1'], enemy['spell2']]:
-                sw = SpellTimerWidget(row, s_name)
+                # Pass 'self' (app) reference so the button can query cache
+                sw = SpellTimerWidget(row, enemy['champ'], s_name, self)
                 sw.pack(side="left", padx=3)
                 self._img_refs.append(sw.icon_img)
                 self._img_refs.append(sw.dim_img)
@@ -475,6 +528,10 @@ class OverlayApp:
         self.root.mainloop()
 
 if __name__ == "__main__":
+    checker = SingleInstanceChecker()
+    if checker.is_already_running():
+        sys.exit(0)
+
     DDragonManager.update_timers()
     app = OverlayApp()
     app.run()
