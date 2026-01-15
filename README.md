@@ -2,6 +2,8 @@
 
 Small Windows overlay that displays enemy summoner spell cooldowns for League of Legends.
 
+![Screenshot](screenshot/screenshot.png)
+
 
 
 ## Quick start
