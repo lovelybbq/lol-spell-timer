@@ -154,8 +154,23 @@ class GameDataManager:
     def parse_enemies(data: Dict) -> List[Dict]:
         if not data: return GameDataManager._get_dummy_data()
         
-        my_team = data.get("activePlayer", {}).get("team", "ORDER")
         all_players = data.get("allPlayers") or []
+        active_data = data.get("activePlayer", {})
+        my_name = active_data.get("summonerName")
+        
+        # --- FIX: Reliable Team Detection ---
+        # Look up the player in the full list to get the correct team (ORDER/CHAOS)
+        my_team = None
+        if my_name:
+            for p in all_players:
+                if p.get("summonerName") == my_name:
+                    my_team = p.get("team")
+                    break
+        
+        # Fallback default
+        if not my_team:
+            my_team = active_data.get("team", "ORDER")
+
         enemies = []
 
         for p in all_players:
